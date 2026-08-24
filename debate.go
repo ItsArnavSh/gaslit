@@ -225,7 +225,7 @@ func (g *Gaslit) buildInitialPrompt(question string, options []string) ([]string
 	for i, opt := range options {
 		label := string(rune('A' + i))
 		optionLabels[i] = label
-		sb.WriteString(fmt.Sprintf("%s) %s\n", label, opt))
+		fmt.Fprintf(&sb, "%s) %s\n", label, opt)
 	}
 	sb.WriteString("\n" + jsonInstruction)
 
@@ -234,11 +234,11 @@ func (g *Gaslit) buildInitialPrompt(question string, options []string) ([]string
 
 func (g *Gaslit) buildDebateTrigger(question string, beforeAnswers map[string]*mcqAnswer) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Commence cross-examination on: %s\n\nInitial Positions:\n", question))
+	fmt.Fprintf(&sb, "Commence cross-examination on: %s\n\nInitial Positions:\n", question)
 
 	for _, name := range g.agentNames {
 		ans := beforeAnswers[name]
-		sb.WriteString(fmt.Sprintf("- %s: picked %s (conf: %.2f) | reasoning: %s\n", name, ans.Answer, ans.Confidences[ans.Answer], ans.Reasoning))
+		fmt.Fprintf(&sb, "- %s: picked %s (conf: %.2f) | reasoning: %s\n", name, ans.Answer, ans.Confidences[ans.Answer], ans.Reasoning)
 	}
 
 	sb.WriteString("\nCHALLENGE REQUESTS FROM PANELISTS:\n")
@@ -246,7 +246,7 @@ func (g *Gaslit) buildDebateTrigger(question string, beforeAnswers map[string]*m
 	for _, name := range g.agentNames {
 		if c := beforeAnswers[name].Challenge; c != nil && c.AgentName != "" && strings.TrimSpace(c.Prompt) != "" {
 			hasChallenges = true
-			sb.WriteString(fmt.Sprintf("- %s formally challenges %s: %q\n", name, c.AgentName, c.Prompt))
+			fmt.Fprintf(&sb, "- %s formally challenges %s: %q\n", name, c.AgentName, c.Prompt)
 		}
 	}
 	if !hasChallenges {

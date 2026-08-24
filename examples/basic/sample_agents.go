@@ -230,6 +230,9 @@ func GetHistoryPanelAgents(ctx context.Context) ([]*adk.ChatModelAgent, error) {
 	}
 
 	trueAgent, err := GetFakeHistorianAgent(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	return []*adk.ChatModelAgent{
 		econAgent,
