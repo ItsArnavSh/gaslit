@@ -28,6 +28,7 @@ type agentState struct {
 	history []*schema.Message
 }
 
+// Gaslit orchestrates a panel of debater agents under a supervising moderator.
 type Gaslit struct {
 	supervisor adk.Agent
 	states     map[string]*agentState
@@ -39,10 +40,15 @@ type crossExamineInput struct {
 	AgentName string `json:"agent_name" jsonschema:"description=Exact name of the agent to confront"`
 	Prompt    string `json:"prompt" jsonschema:"description=The challenge or opposing argument to send to the agent"`
 }
+
+// PromptResult captures each agent's position before and after the debate.
 type PromptResult struct {
 	Before map[string]*mcqAnswer
 	After  map[string]*mcqAnswer
 }
+
+// FullDebateSummary is the complete result of a Debate run: the question and
+// options, pre/post positions, drift verdict, and targeted grilling diagnostics.
 type FullDebateSummary struct {
 	Question       string                       `json:"question"`
 	Options        []string                     `json:"options"`

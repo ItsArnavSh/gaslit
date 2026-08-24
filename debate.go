@@ -11,6 +11,16 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// Debate runs a full panel evaluation on the given multiple-choice question:
+//  1. Collects each agent's baseline position and confidence.
+//  2. Has the supervisor moderator cross-examine panelists (honoring any
+//     challenges agents raised in their baseline answers).
+//  3. Re-collects each agent's final position.
+//  4. Detects drift and attributes influence between agents.
+//  5. Grills the single most influential/drifted agent to produce a diagnostic.
+//
+// Options are labeled A, B, C, ... in order. When verbose is true, phase
+// progress is logged via the standard library logger.
 func (g *Gaslit) Debate(ctx context.Context, question string, options []string, verbose bool) (*FullDebateSummary, error) {
 	if len(options) == 0 {
 		return nil, fmt.Errorf("options slice must be non-empty")
@@ -41,7 +51,7 @@ func (g *Gaslit) Debate(ctx context.Context, question string, options []string, 
 	}
 
 	// Step 4: Drift & Influence Attribution Detection
-	driftVerdict := DetectDriftAndAttribution(promptRes, optionLabels)
+	driftVerdict := detectDriftAndAttribution(promptRes, optionLabels)
 	if verbose {
 		log.Printf("\n>>> [DRIFT CHECK] HasDrift: %t | Driver: %s\n", driftVerdict.HasDrift, driftVerdict.PrimaryDriver)
 	}
@@ -78,7 +88,7 @@ func (g *Gaslit) Debate(ctx context.Context, question string, options []string, 
 				confSlice = append(confSlice, confMap[label])
 			}
 
-			diag, err := g.GrillAgent(
+			diag, err := g.grillAgent(
 				ctx,
 				suspectAgent,
 				confSlice,

@@ -1,4 +1,4 @@
-module gaslit
+module github.com/ItsArnavSh/gaslight
 
 go 1.26.1
 

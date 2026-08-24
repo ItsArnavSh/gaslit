@@ -5,19 +5,27 @@ import (
 )
 
 const (
-	// Shift threshold for non-flipping confidence erosion (e.g., 0.15 = 15%)
-	SignificantConfidenceThreshold = 0.15
+	// significantConfidenceThreshold is the minimum shift required to flag
+	// non-flipping confidence erosion (e.g., 0.15 = 15%).
+	significantConfidenceThreshold = 0.15
 )
 
+// DriftVerdict describes whether agents changed their positions over the course
+// of a debate, which agents moved, and who drove the shift.
 type DriftVerdict struct {
-	HasDrift      bool               `json:"has_drift"`
-	DriftedAgents []string           `json:"drifted_agents"`
-	PrimaryDriver string             `json:"primary_driver"` // Agent who influenced the shift
-	DriverImpact  string             `json:"driver_impact"`  // Description of who swayed whom
-	AgentShifts   map[string]float64 `json:"agent_shifts"`   // Total variation distance per agent
+	// HasDrift reports whether any agent flipped or significantly eroded.
+	HasDrift bool `json:"has_drift"`
+	// DriftedAgents lists the names of agents that drifted.
+	DriftedAgents []string `json:"drifted_agents"`
+	// PrimaryDriver is the agent (or the supervisor) responsible for the shift.
+	PrimaryDriver string `json:"primary_driver"`
+	// DriverImpact is a human-readable description of who swayed whom.
+	DriverImpact string `json:"driver_impact"`
+	// AgentShifts maps each agent name to its total variation distance.
+	AgentShifts map[string]float64 `json:"agent_shifts"`
 }
 
-func DetectDriftAndAttribution(res *PromptResult, optionLabels []string) DriftVerdict {
+func detectDriftAndAttribution(res *PromptResult, optionLabels []string) DriftVerdict {
 	verdict := DriftVerdict{
 		HasDrift:    false,
 		AgentShifts: make(map[string]float64),
@@ -51,9 +59,9 @@ func DetectDriftAndAttribution(res *PromptResult, optionLabels []string) DriftVe
 		// Condition B: Massive erosion on initial pick
 		preConf := b.Confidences[b.Answer]
 		postConf := a.Confidences[b.Answer]
-		confEroded := (preConf - postConf) >= SignificantConfidenceThreshold
+		confEroded := (preConf - postConf) >= significantConfidenceThreshold
 
-		if flipped || confEroded || tvd >= SignificantConfidenceThreshold {
+		if flipped || confEroded || tvd >= significantConfidenceThreshold {
 			verdict.HasDrift = true
 			verdict.DriftedAgents = append(verdict.DriftedAgents, name)
 

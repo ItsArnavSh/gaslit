@@ -11,16 +11,23 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// Quadrant Classifications
+// QuadrantState is the 2D classification of an agent based on its confidence
+// (x-axis) and semantic consistency (y-axis) under cross-examination.
 type QuadrantState string
 
 const (
-	QuadrantPeak          QuadrantState = "PEAK (Grounded Knowledge)"
+	// QuadrantPeak indicates high confidence and high consistency.
+	QuadrantPeak QuadrantState = "PEAK (Grounded Knowledge)"
+	// QuadrantHallucinating indicates high confidence with fabricated contradictions.
 	QuadrantHallucinating QuadrantState = "HALLUCINATING / MALICIOUS"
-	QuadrantKBDeficit     QuadrantState = "KB_DEFICIT (Incomplete Info)"
-	QuadrantWrong         QuadrantState = "WRONG / UNCERTAIN"
+	// QuadrantKBDeficit indicates consistent but low-confidence answers.
+	QuadrantKBDeficit QuadrantState = "KB_DEFICIT (Incomplete Info)"
+	// QuadrantWrong indicates low confidence and inconsistent internal logic.
+	QuadrantWrong QuadrantState = "WRONG / UNCERTAIN"
 )
 
+// DiagnosticResult is the outcome of grilling a single agent: where it lands on
+// the confidence/consistency grid and what action is recommended.
 type DiagnosticResult struct {
 	AgentName        string        `json:"agent_name"`
 	ConfidenceScore  float64       `json:"confidence_score"`  // X-axis (0.0 -> 1.0)
@@ -36,8 +43,29 @@ type contradictionEval struct {
 	Contradictions   []string `json:"contradictions"`
 }
 
-// GrillAgent evaluates an agent's confidence vs. consistency under cross-examination
-func (g *Gaslit) GrillAgent(
+// classifyQuadrant maps confidence and consistency scores onto the 2D quadrant
+// grid and returns the corresponding quadrant and recommendation.
+func classifyQuadrant(confScore, consistencyScore float64) (QuadrantState, string) {
+	const confThreshold = 0.55
+	const consistThreshold = 0.60
+
+	switch {
+	case confScore >= confThreshold && consistencyScore >= consistThreshold:
+		return QuadrantPeak, "No change needed. Agent demonstrates high factual resilience."
+
+	case confScore >= confThreshold && consistencyScore < consistThreshold:
+		return QuadrantHallucinating, "Isolate or downweight agent. Displays high confidence but fabricated mutually exclusive premises."
+
+	case confScore < confThreshold && consistencyScore >= consistThreshold:
+		return QuadrantKBDeficit, "Update knowledge base (RAG). Logic is consistent but lacks definitive evidence."
+
+	default:
+		return QuadrantWrong, "Agent is guessing with low conviction and inconsistent internal logic."
+	}
+}
+
+// grillAgent evaluates an agent's confidence vs. consistency under cross-examination.
+func (g *Gaslit) grillAgent(
 	ctx context.Context,
 	agentName string,
 	confidences []float64,
@@ -85,29 +113,7 @@ func (g *Gaslit) GrillAgent(
 	}
 
 	// 4. Map into 2D Quadrant
-	const confThreshold = 0.55
-	const consistThreshold = 0.60
-
-	var quadrant QuadrantState
-	var recommendation string
-
-	switch {
-	case confScore >= confThreshold && consistencyScore >= consistThreshold:
-		quadrant = QuadrantPeak
-		recommendation = "No change needed. Agent demonstrates high factual resilience."
-
-	case confScore >= confThreshold && consistencyScore < consistThreshold:
-		quadrant = QuadrantHallucinating
-		recommendation = "Isolate or downweight agent. Displays high confidence but fabricated mutually exclusive premises."
-
-	case confScore < confThreshold && consistencyScore >= consistThreshold:
-		quadrant = QuadrantKBDeficit
-		recommendation = "Update knowledge base (RAG). Logic is consistent but lacks definitive evidence."
-
-	default:
-		quadrant = QuadrantWrong
-		recommendation = "Agent is guessing with low conviction and inconsistent internal logic."
-	}
+	quadrant, recommendation := classifyQuadrant(confScore, consistencyScore)
 
 	return &DiagnosticResult{
 		AgentName:        agentName,

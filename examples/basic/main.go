@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"gaslit/gaslit"
 	"log"
 
+	"github.com/ItsArnavSh/gaslight"
 	"github.com/cloudwego/eino/adk"
 )
 

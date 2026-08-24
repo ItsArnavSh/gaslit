@@ -3,13 +3,18 @@ package gaslit
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
 
+// Init builds a Gaslit engine around the supplied supervisor model and debater
+// agents. At least one agent is required. The returned engine serializes the
+// baseline/evaluation phases, supervised cross-examination, and drift analysis.
+//
+// The agents are keyed by their Name, which must be unique. Concurrent calls to
+// Debate on the same engine are safe.
 func Init(ctx context.Context, supervisorModel model.BaseModel[*schema.Message], agents []adk.Agent) (*Gaslit, error) {
 	if len(agents) == 0 {
 		return nil, fmt.Errorf("at least one agent must be provided")
@@ -40,6 +45,5 @@ func Init(ctx context.Context, supervisorModel model.BaseModel[*schema.Message],
 	}
 
 	g.supervisor = supervisorAgent
-	log.Printf("[GASLIT] Framework initialized with %d debater agents.", len(agents))
 	return g, nil
 }
