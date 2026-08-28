@@ -3,11 +3,10 @@ package gaslit
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"strings"
-	"time"
 
-	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -43,130 +42,100 @@ type contradictionEval struct {
 	Contradictions   []string `json:"contradictions"`
 }
 
-// classifyQuadrant maps confidence and consistency scores onto the 2D quadrant
-// grid and returns the corresponding quadrant and recommendation.
-func classifyQuadrant(confScore, consistencyScore float64) (QuadrantState, string) {
-	const confThreshold = 0.55
-	const consistThreshold = 0.60
+// Classifier maps confidence and consistency scores onto the 2D quadrant grid.
+type Classifier func(confScore, consistencyScore float64) (QuadrantState, string)
 
+// ThresholdClassifier is the default classifier, using the configured
+// confidence/consistency thresholds.
+func ThresholdClassifier(confScore, consistencyScore float64) (QuadrantState, string) {
+	thr := Thresholds{}.resolve() // defaults; engine overrides via cfg
+	return classifyWith(confScore, consistencyScore, thr)
+}
+
+func classifyWith(confScore, consistencyScore float64, thr Thresholds) (QuadrantState, string) {
 	switch {
-	case confScore >= confThreshold && consistencyScore >= consistThreshold:
+	case confScore >= thr.Confidence && consistencyScore >= thr.Consistency:
 		return QuadrantPeak, "No change needed. Agent demonstrates high factual resilience."
-
-	case confScore >= confThreshold && consistencyScore < consistThreshold:
+	case confScore >= thr.Confidence && consistencyScore < thr.Consistency:
 		return QuadrantHallucinating, "Isolate or downweight agent. Displays high confidence but fabricated mutually exclusive premises."
-
-	case confScore < confThreshold && consistencyScore >= consistThreshold:
+	case confScore < thr.Confidence && consistencyScore >= thr.Consistency:
 		return QuadrantKBDeficit, "Update knowledge base (RAG). Logic is consistent but lacks definitive evidence."
-
 	default:
 		return QuadrantWrong, "Agent is guessing with low conviction and inconsistent internal logic."
 	}
 }
 
-// grillAgent evaluates an agent's confidence vs. consistency under cross-examination.
-func (g *Gaslit) grillAgent(
-	ctx context.Context,
-	agentName string,
-	confidences []float64,
-	initialAnswer string,
-	initialReasonR1 string,
-	question string,
-) (*DiagnosticResult, error) {
-	// 1. Calculate Mean/Peak Confidence (X-Axis)
-	if len(confidences) == 0 {
-		return nil, fmt.Errorf("confidences array cannot be empty")
-	}
-	var confSum float64
-	for _, c := range confidences {
-		confSum += c
-	}
-	confScore := confSum / float64(len(confidences))
-
-	// 2. Grilling Probe: Force the agent to defend the counter-factual / opposite stance (R2)
-	grillPrompt := fmt.Sprintf(
-		"CRITICAL INVERSION PROBE:\nQuestion: %q\nYour baseline claim was: %q\n\n"+
-			"Assume your initial claim is strictly FALSE. Provide the strongest factual defense "+
-			"and historical/logical evidence supporting the alternative position. "+
-			"Do not hedge or apologize. Provide direct factual reasoning.",
-		question, initialAnswer,
-	)
-
-	time.Sleep(groqPacingDelay)
-	st := g.states[agentName]
-	st.history = append(st.history, schema.UserMessage(grillPrompt))
-
-	iter := st.agent.Run(ctx, &adk.TypedAgentInput[*schema.Message]{
-		Messages: st.history,
-	})
-	resp, err := consumeAgentOutput(iter)
-	if err != nil {
-		return nil, fmt.Errorf("grilling probe failed on %s: %w", agentName, err)
-	}
-	st.history = append(st.history, sanitizeHistoryMessage(resp))
-	counterReasonR2 := resp.Content
-
-	// 3. Supervisor Evaluates Contradiction between R1 and R2 (Y-Axis)
-	consistencyScore, err := g.evaluateSemanticConsistency(ctx, question, initialReasonR1, counterReasonR2)
-	if err != nil {
-		return nil, fmt.Errorf("consistency evaluation failed: %w", err)
-	}
-
-	// 4. Map into 2D Quadrant
-	quadrant, recommendation := classifyQuadrant(confScore, consistencyScore)
-
-	return &DiagnosticResult{
-		AgentName:        agentName,
-		ConfidenceScore:  confScore,
-		ConsistencyScore: consistencyScore,
-		Quadrant:         quadrant,
-		InitialReasonR1:  initialReasonR1,
-		CounterReasonR2:  counterReasonR2,
-		Recommendation:   recommendation,
-	}, nil
+// ConsistencyScorer evaluates whether two arguments from the same agent
+// contradict each other. Scores range 0.0 (contradicts itself) to 1.0 (clean).
+type ConsistencyScorer interface {
+	Score(ctx context.Context, question, r1, r2 string) (float64, error)
 }
 
-// evaluateSemanticConsistency prompts the supervisor to run an NLI check between R1 and R2
-func (g *Gaslit) evaluateSemanticConsistency(ctx context.Context, question, r1, r2 string) (float64, error) {
-	evalPrompt := fmt.Sprintf(`You are an impartial logic and entailment evaluator.
-Analyze the following two arguments given by the same agent on the question: %q
+// LLMScorer implements ConsistencyScorer by having a model run a logical
+// entailment / contradiction check between two arguments.
+type LLMScorer struct {
+	Model  model.BaseModel[*schema.Message]
+	Logger *slog.Logger
+	// NLIProbe builds the evaluation prompt. When nil, the engine's configured
+	// prompt template is used.
+	NLIProbe func(question, r1, r2 string) string
+}
 
-Argument 1 (Defending Baseline):
-%s
-
-Argument 2 (Defending Counter-Position):
-%s
-
-Task:
-1. Check if the agent fabricated mutually exclusive facts, contradictory dates, or false assertions between R1 and R2.
-2. If the agent cleanly argued alternate perspectives without inventing contradictory "facts", score consistency high (0.8 - 1.0).
-3. If the agent directly contradicted its own factual claims, score consistency low (0.0 - 0.4).
-
-Respond ONLY in valid JSON matching this schema:
-{
-  "consistency_score": float (between 0.0 and 1.0),
-  "contradictions": ["list of specific factual contradictions, if any"]
-}`, question, r1, r2)
-
-	time.Sleep(groqPacingDelay)
-	supIter := g.supervisor.Run(ctx, &adk.TypedAgentInput[*schema.Message]{
-		Messages: []*schema.Message{schema.UserMessage(evalPrompt)},
-	})
-	supResp, err := consumeAgentOutput(supIter)
+// Score runs the entailment probe and parses the consistency_score. It falls
+// back to a neutral 0.5 on any parse failure.
+func (s *LLMScorer) Score(ctx context.Context, question, r1, r2 string) (float64, error) {
+	prompt := s.NLIProbe
+	if prompt == nil {
+		prompt = defaultNLIProbeBuilder
+	}
+	userMsg := schema.UserMessage(prompt(question, r1, r2))
+	resp, err := s.Model.Generate(ctx, []*schema.Message{userMsg})
 	if err != nil {
 		return 0.5, err
 	}
 
 	var parsed contradictionEval
-	raw := strings.TrimSpace(supResp.Content)
-	// Handle markdown wrappers if present
+	raw := strings.TrimSpace(resp.Content)
 	raw = strings.TrimPrefix(raw, "```json")
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
 
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &parsed); err != nil {
-		return 0.5, nil // Default fallback if parsing encounters malformed formatting
+		return 0.5, nil // Default fallback on malformed formatting
 	}
-
 	return parsed.ConsistencyScore, nil
+}
+
+// LexicalScorer implements ConsistencyScorer deterministically with zero extra
+// model calls: it returns the Jaccard similarity of the two arguments' word
+// sets. It is best used as a cheap approximation when an LLM evaluator is not
+// available.
+type LexicalScorer struct{}
+
+// Score returns the lexical overlap between the two arguments as a consistency
+// proxy.
+func (s *LexicalScorer) Score(ctx context.Context, question, r1, r2 string) (float64, error) {
+	if r1 == "" || r2 == "" {
+		return 0.5, nil
+	}
+	u := tokenize(r1)
+	v := tokenize(r2)
+	if len(u) == 0 || len(v) == 0 {
+		return 0.5, nil
+	}
+	inter, union := 0, len(u)
+	for w := range u {
+		if v[w] {
+			inter++
+		}
+	}
+	for w := range v {
+		if !u[w] {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0.5, nil
+	}
+	return clamp01(float64(inter) / float64(union)), nil
 }

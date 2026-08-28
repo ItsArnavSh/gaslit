@@ -3,9 +3,7 @@ package gaslit
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
-	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -17,19 +15,17 @@ import (
 
 func (g *Gaslit) createCrossExamineTool() (tool.BaseTool, error) {
 	toolHandler := func(c context.Context, in *crossExamineInput) (string, error) {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-
-		log.Printf("  [Supervisor ➔ %s] %s", in.AgentName, in.Prompt)
-
 		st, exists := g.states[in.AgentName]
 		if !exists {
 			return fmt.Sprintf("Agent %q not found. Available: %s", in.AgentName, strings.Join(g.agentNames, ", ")), nil
 		}
 
-		time.Sleep(groqPacingDelay)
+		if g.cfg.Hooks.OnCrossExam != nil {
+			g.cfg.Hooks.OnCrossExam(c, in.AgentName, in.Prompt)
+		}
+		g.record(EventCrossExam, in.AgentName, in)
 
-		userMsg := fmt.Sprintf("%s\n\nRe-evaluate your position under this cross-examination.\n%s", in.Prompt, jsonInstruction)
+		userMsg := fmt.Sprintf(g.cfg.PromptTemplates.CrossExamineLead, g.redact(in.Prompt), g.cfg.AnswerSchema.Instruction())
 		respMsg, err := g.sendToAgent(c, st, userMsg)
 		if err != nil {
 			return "", fmt.Errorf("error from agent %s: %w", in.AgentName, err)
@@ -45,16 +41,12 @@ func (g *Gaslit) createCrossExamineTool() (tool.BaseTool, error) {
 	)
 }
 
-func (g *Gaslit) createSupervisorAgent(ctx context.Context, model model.BaseModel[*schema.Message], debateTool tool.BaseTool) (adk.Agent, error) {
-	instruction := fmt.Sprintf(`You are the Courtroom Debate Moderator.
-Panelists: %s.
-
-Rules:
-1. NO FINAL VERDICT: Do NOT summarize, do NOT select a winner, and do NOT give a conclusion.
-2. Cross-Examination: Take arguments made by one agent and challenge the others using 'cross_examine_agent'. Be pointed and adversarial — do not soften panelists' claims when you relay them.
-3. Honor Nominations: If the prompt you receive lists panelist-submitted CHALLENGE REQUESTS, you MUST act on each one by calling 'cross_examine_agent' with that target and a sharpened version of the stated prompt, in addition to any challenges you initiate yourself.
-4. Round Limit: Perform at most 3 to 4 challenges per agent.
-5. Exit: Say "Debate ended." and stop once done.`, strings.Join(g.agentNames, ", "))
+func (g *Gaslit) createSupervisorAgent(ctx context.Context, model model.BaseModel[*schema.Message], tools []tool.BaseTool) (adk.Agent, error) {
+	names := strings.Join(g.agentNames, ", ")
+	instruction := g.cfg.PromptTemplates.SupervisorSystem
+	if strings.Contains(instruction, "%s") {
+		instruction = fmt.Sprintf(instruction, names)
+	}
 
 	return adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "moderator_supervisor",
@@ -63,8 +55,35 @@ Rules:
 		Model:       model,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: []tool.BaseTool{debateTool},
+				Tools: tools,
 			},
 		},
 	})
+}
+
+// runSupervisor runs the moderator with a single user prompt, applying pacing,
+// budget accounting, redaction, and an optional per-request timeout.
+func (g *Gaslit) runSupervisor(ctx context.Context, prompt string) (*schema.Message, error) {
+	if err := g.checkBudget(ctx); err != nil {
+		return nil, err
+	}
+	if err := g.pace(ctx); err != nil {
+		return nil, err
+	}
+
+	rctx, cancel := ctx, func() {}
+	if g.cfg.RequestTimeout > 0 {
+		rctx, cancel = context.WithTimeout(ctx, g.cfg.RequestTimeout)
+	}
+	defer cancel()
+
+	iter := g.supervisor.Run(rctx, &adk.TypedAgentInput[*schema.Message]{
+		Messages: []*schema.Message{schema.UserMessage(g.redact(prompt))},
+	})
+	resp, err := consumeAgentOutput(iter)
+	if err != nil {
+		return nil, err
+	}
+	g.accountCall("moderator_supervisor", resp.Content)
+	return resp, nil
 }

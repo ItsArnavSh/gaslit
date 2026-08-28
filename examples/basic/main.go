@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/ItsArnavSh/gaslit"
 	"github.com/cloudwego/eino/adk"
@@ -16,20 +17,29 @@ func main() {
 		log.Fatal(err)
 		return
 	}
-	adkAgents := make([]adk.Agent, len(agents))
-	for i, a := range agents {
-		adkAgents[i] = a
-	}
 	supervisorModel, err := GetGroqModel(ctx, "openai/gpt-oss-120b")
 	if err != nil {
 		log.Fatalf("failed to create supervisor model: %v", err)
 	}
-	engine, err := gaslit.Init(ctx, supervisorModel, adkAgents)
+
+	cfg := gaslit.PresetDefault()
+	cfg.SupervisorModel = supervisorModel
+	adkAgents := make([]adk.Agent, len(agents))
+	for i, a := range agents {
+		adkAgents[i] = a
+	}
+	cfg.Agents = adkAgents
+
+	engine, err := gaslit.New(ctx, cfg,
+		gaslit.WithPacingDelay(3*time.Second),
+		gaslit.WithVerbose(true),
+		gaslit.WithConcurrency(2),
+		gaslit.WithGrillStrategy(gaslit.GrillAllDrifted),
+	)
 	if err != nil {
 		log.Fatalf("failed to init gaslit: %v", err)
 	}
 
-	// 5. Define the question and ordered options
 	question := "What was the single most decisive factor in the Western Roman Empire's collapse?"
 	options := []string{
 		"Economic exhaustion from hyperinflation, currency debasement, and tax base flight",
@@ -38,17 +48,15 @@ func main() {
 		"A succession of catastrophic plagues crippling the agricultural workforce",
 	}
 
-	// 6. Run the baseline evaluation, supervised cross-examination, and print confidence shifts
-	verbose := true
-	summary, err := engine.Debate(ctx, question, options, verbose)
+	summary, err := engine.Debate(ctx, question, options)
 	if err != nil {
 		log.Fatalf("Debate execution failed: %v", err)
 	}
 
-	// 5. Inspect or serialize the final output
 	fmt.Println("\n================ FINAL REPORT ================")
 	fmt.Printf("Outcome: %s\n", summary.OverallOutcome)
 	fmt.Printf("Drift Detected: %t\n", summary.DriftVerdict.HasDrift)
+	fmt.Printf("Winner: %s\n", summary.Winner)
 
 	for name, diag := range summary.Diagnostics {
 		fmt.Printf("\n[Diagnostic: %s]\n", name)
