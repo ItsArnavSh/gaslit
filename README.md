@@ -1,6 +1,6 @@
 # gaslit
 
-A Go framework that stress-tests AI agents by staging a **supervised courtroom debate**. Gaslit runs a panel of debater agents against a multiple-choice question, cross-examines them with a moderator, and detects when agents **drift** or **hallucinate**.
+A Go framework that stress-tests AI agents by staging a **supervised courtroom debate**. Gaslit runs a panel of debater agents against a multiple-choice (or open-ended) question, cross-examines them with a moderator, and detects when agents **drift** or **hallucinate**.
 
 Built on top of [cloudwego/eino](https://github.com/cloudwego/eino).
 
@@ -9,8 +9,8 @@ Built on top of [cloudwego/eino](https://github.com/cloudwego/eino).
 1. **Baseline** — every agent answers the question with per-option confidences.
 2. **Cross-examination** — a supervisor moderator challenges panelists using their own claims and any challenges agents raised, via a `cross_examine_agent` tool.
 3. **Re-evaluation** — agents give final positions.
-4. **Drift detection** — flips, confidence erosion, and total variation distance are measured, and influence is attributed to the swaying agent (or the supervisor).
-5. **Grill** — the single most drifted/influential agent is grilled with an inversion probe and scored on a confidence/consistency quadrant.
+4. **Drift detection** — flips, confidence erosion, and a pluggable shift metric are measured, and influence is attributed to the swaying agent (or the supervisor).
+5. **Grill / CCI** — drifted/influential agents are grilled with an inversion probe and scored on a confidence/consistency quadrant.
 
 ### Quadrant diagnostics
 
@@ -60,8 +60,19 @@ func main() {
 		Model:       myModel,
 	})
 
-	// 2. Initialize the engine with a supervisor model + the panel.
-	engine, err := gaslit.Init(ctx, myModel, []adk.Agent{econ, pol})
+	// 2. Configure the engine: thresholds, drift metric, attribution, grill
+	//    strategy, protocols, prompts, budgets, hooks, persistence, ...
+	cfg := gaslit.PresetDefault()
+	cfg.SupervisorModel = myModel
+	cfg.Agents = []adk.Agent{econ, pol}
+	cfg.Thresholds = gaslit.Thresholds{DriftSignificance: 0.15, Confidence: 0.55, Consistency: 0.60}
+	cfg.DriftMetric = gaslit.TVDRift
+	cfg.AttributionFn = gaslit.ChampionAttribution
+	cfg.GrillStrategy = gaslit.GrillSingleSuspect
+	cfg.Protocol = gaslit.ProtocolSupervised
+	cfg.Concurrency = 4
+
+	engine, err := gaslit.New(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -70,7 +81,7 @@ func main() {
 	summary, err := engine.Debate(ctx, "What caused the Roman Empire's collapse?", []string{
 		"Economic exhaustion",
 		"Military breakdown",
-	}, true)
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -83,11 +94,60 @@ func main() {
 }
 ```
 
-## API
+## Configuration
 
-- `Init(ctx, supervisorModel, agents) (*Gaslit, error)` — build an engine from a panel of `adk.Agent`s and a supervisor model.
-- `(*Gaslit).Debate(ctx, question, options, verbose) (*FullDebateSummary, error)` — run the full baseline → cross-examine → evaluate → drift → grill pipeline.
-- `FullDebateSummary`, `PromptResult`, `DriftVerdict`, `DiagnosticResult`, `QuadrantState` — result types describing positions, drift, and per-agent diagnostics.
+Everything is set on a `Config` struct passed to `New(ctx, cfg)`, and any field
+can be refined with an `Option`:
+
+- **Thresholds** — `Thresholds{DriftSignificance, Confidence, Consistency}`,
+  also per-call via `WithThresholdsCall`.
+- **Presets** — `PresetDefault()`, `PresetStrict()`, `PresetLenient()`.
+- **Drift metrics** — `TVDRift`, `KLDistance`, `JSDistance`, `MaxChange`, or any
+  custom `DriftMetric` function.
+- **Attribution** — `ChampionAttribution`, `ShiftWeightedAttribution`,
+  `CorrelationAttribution`, or a custom `AttributionFn`.
+- **Quadrant classifier** — `ThresholdClassifier` or a custom `Classifier`.
+- **Consistency scoring** — `*LLMScorer` (default, uses the supervisor model) or
+  the deterministic `*LexicalScorer` (zero extra model calls), or a custom
+  `ConsistencyScorer`.
+- **Grill strategy** — `GrillNone`, `GrillSingleSuspect`, `GrillInfluencer`,
+  `GrillAllDrifted`, `GrillTopN` (with `GrillCount`).
+- **Protocols** — `ProtocolSupervised`, `ProtocolAdversarialPairs`,
+  `ProtocolRoundRobin`, `ProtocolDevilsAdvocate`.
+- **Aggregation** — `MajorityVote`, `ConfidenceWeightedVote`, `WeightedVote`,
+  `ConfidenceWeightedWeightedVote`, or a custom `AggregationFn`.
+- **Prompts** — override any template via `PromptTemplates` (initial prompt,
+  debate trigger, grill probe, NLI probe, supervisor system, ...).
+- **Answer schema** — `*MCQSchema` (default) or `*OpenEndedSchema` for free-form
+  questions (pass empty options to `Debate`). Custom schemas implement
+  `AnswerSchema`.
+- **Per-agent** — `AgentConfig{Instruction, Weight, SkipPhases}` keyed by name.
+- **Execution** — `PacingDelay`, `RequestTimeout`, `MaxRetries`, `Concurrency`,
+  `MaxRounds`, `OptionLabels`.
+- **Budget** — `CostBudget{MaxCalls, MaxTokens, Deadline}` caps total work.
+- **Observability** — `Hooks` callbacks, `Recorder` (e.g. `JSONLRecorder`),
+  `Instrumentation.Stats()`, `Redact`.
+- **Moderator tools** — `ExtraTools` are added to the supervisor.
+
+## Function variants
+
+The pipeline is fully sliced; every stage is callable standalone:
+
+- `Debate(ctx, question, options, opts...)` — full pipeline.
+- `DebateN(ctx, question, options, rounds, opts...)` — multi-round debate.
+- `DebateMany(ctx, questions, optionsList, opts...)` — batch, reusing context.
+- `Baseline(ctx, question, options, opts...)` — stage 1 only.
+- `CrossExamine(ctx, question, before, opts...)` — stage 2 only.
+- `Evaluate(ctx, options, opts...)` — stage 3 only.
+- `DriftAnalysis(before, after, options, opts...)` — pure drift verdict.
+- `Grill(ctx, agentName, claim, question, opts...)` — grill a registered panelist.
+- `CCI(ctx, agent, statement, question, opts...)` — **standalone** consistency /
+  confidence probe against any `adk.Agent`, even one outside the panel.
+- `Stream(ctx, question, options, opts...)` — stream pipeline events as they happen.
+
+All variants accept per-call `CallOption`s (`WithVerboseCall`, `WithMaxRoundsCall`,
+`WithThresholdsCall`, `WithMetadataCall`, `WithBudgetCall`, ...) that merge over
+the engine config.
 
 ## Example
 
