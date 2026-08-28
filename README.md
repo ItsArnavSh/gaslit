@@ -1,6 +1,6 @@
-# gaslight
+# gaslit
 
-A Go framework that stress-tests AI agents by staging a **supervised courtroom debate**. Gaslight runs a panel of debater agents against a multiple-choice question, cross-examines them with a moderator, and detects when agents **drift** or **hallucinate**.
+A Go framework that stress-tests AI agents by staging a **supervised courtroom debate**. Gaslit runs a panel of debater agents against a multiple-choice question, cross-examines them with a moderator, and detects when agents **drift** or **hallucinate**.
 
 Built on top of [cloudwego/eino](https://github.com/cloudwego/eino).
 
@@ -24,7 +24,7 @@ Built on top of [cloudwego/eino](https://github.com/cloudwego/eino).
 ## Install
 
 ```sh
-go get github.com/ItsArnavSh/gaslight
+go get github.com/ItsArnavSh/gaslit
 ```
 
 Requires Go 1.26+.
@@ -39,7 +39,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/ItsArnavSh/gaslight"
+	"github.com/ItsArnavSh/gaslit"
 	"github.com/cloudwego/eino/adk"
 )
 
@@ -61,7 +61,7 @@ func main() {
 	})
 
 	// 2. Initialize the engine with a supervisor model + the panel.
-	engine, err := gaslight.Init(ctx, myModel, []adk.Agent{econ, pol})
+	engine, err := gaslit.Init(ctx, myModel, []adk.Agent{econ, pol})
 	if err != nil {
 		log.Fatal(err)
 	}

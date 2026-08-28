@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/ItsArnavSh/gaslight"
+	"github.com/ItsArnavSh/gaslit"
 	"github.com/cloudwego/eino/adk"
 )
 
@@ -24,7 +24,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create supervisor model: %v", err)
 	}
-	gaslight, err := gaslit.Init(ctx, supervisorModel, adkAgents)
+	engine, err := gaslit.Init(ctx, supervisorModel, adkAgents)
 	if err != nil {
 		log.Fatalf("failed to init gaslit: %v", err)
 	}
@@ -40,7 +40,7 @@ func main() {
 
 	// 6. Run the baseline evaluation, supervised cross-examination, and print confidence shifts
 	verbose := true
-	summary, err := gaslight.Debate(ctx, question, options, verbose)
+	summary, err := engine.Debate(ctx, question, options, verbose)
 	if err != nil {
 		log.Fatalf("Debate execution failed: %v", err)
 	}
