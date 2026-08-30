@@ -44,7 +44,7 @@ through it.
 
 ### Phases
 
-Each phase is a distinct `Phase` value (`config.go`):
+Each phase is a distinct `Phase` value (`internal/core`):
 
 | Phase | Constant | What happens |
 |---|---|---|
@@ -58,7 +58,7 @@ Each phase is a distinct `Phase` value (`config.go`):
 
 ## Step 1 — Baseline
 
-`Baseline(ctx, question, options, ...)` (`debate.go`) sends each agent the
+`Baseline(ctx, question, options, ...)` (`internal/engine`) sends each agent the
 question. The prompt is built by `buildInitialPrompt`:
 
 - Options are labeled `A`, `B`, `C`, ... (or via `OptionLabels`).
@@ -77,7 +77,7 @@ type Answer struct {
 }
 ```
 
-Parsing goes through `queryAgent` (`util.go`), which retries with a corrective
+Parsing goes through `queryAgent` (`internal/engine`), which retries with a corrective
 prompt up to `MaxRetries` times when the agent emits unparseable output. The
 whole per-phase query is a single `forEachAgent` call that honors
 `Concurrency`. When `Concurrency > 1`, agents are queried in parallel while a
@@ -90,19 +90,19 @@ mutex protects the shared answers map.
 ## Step 2 — Cross-Examination
 
 `CrossExamine(ctx, question, before, ...)` delegates to
-`runCrossExamination` (`protocols.go`), which dispatches on the configured
+`runCrossExamination` (`internal/engine`), which dispatches on the configured
 `Protocol`:
 
 ### `ProtocolSupervised` (default)
 The engine builds a **moderator briefing** via `DebateTrigger`
-(`prompts.go`). The briefing contains:
+(`internal/core`). The briefing contains:
 
 - the question,
 - every panelist's initial pick, confidence, and reasoning,
 - the panelist-submitted **CHALLENGE REQUESTS** (the `Challenge` field from
   `Answer`).
 
-The briefing is fed to a supervisor agent (`supervisor.go`) built with
+The briefing is fed to a supervisor agent (`internal/engine`) built with
 `adk.NewChatModelAgent`. The supervisor has a `cross_examine_agent` tool
 (plus any `ExtraTools`). Calling that tool runs `CrossExamineLead` against the
 nominated agent and appends the exchange to that agent's history. The tool
@@ -133,7 +133,7 @@ count is `MaxRounds` (default 1, overridable per-call with
 
 ## Step 4 — Drift detection and attribution
 
-`analyze` calls the pure `analyzeDrift` (`drift.go`) with the
+`analyze` calls the pure `analyzeDrift` (`internal/drift`) with the
 `PromptResult{Before, After}`.
 
 For each agent it computes a `shift`:
@@ -180,7 +180,7 @@ Independent of drift, `AggregationFn` computes the debate **winner** from the
 ## Step 5 — Grilling (Confidence/Consistency probe)
 
 `grillPhase` selects which agents to grill based on the `GrillStrategy`
-(`grill.go`):
+(`internal/engine`):
 
 | Strategy | Grills |
 |---|---|
@@ -200,9 +200,12 @@ For each selected agent the engine runs a **CCI-style probe**:
    (the original claim) with R2 (the counter-argument):
    - `LLMScorer` (default): an NLI entailment probe returns
      `{consistency_score, contradictions}`. High score = cleanly argued both
-     sides; low score = invented contradictory "facts".
+     sides; low score = invented contradictory "facts". Runs on
+     `Config.ConsistencyModel` (defaults to `SupervisorModel`) so the NLI
+     check can use a cheap model while the moderator uses a strong one.
    - `LexicalScorer`: deterministic Jaccard overlap of the two arguments' word
-     sets. Zero extra model calls.
+     sets. Zero extra model calls — a weak proxy, good for iterating on the
+     pipeline, not for final numbers.
 
 4. **Classification** — `classifyWith` maps (confidence, consistency) onto the
    quadrant grid:

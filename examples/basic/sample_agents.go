@@ -21,6 +21,13 @@ import (
 
 var retryRegex = regexp.MustCompile(`(?:try again in|retry after)\s+([\d\.]+)s`)
 
+// ModelStrong drives the moderator and the debaters. ModelCheap is a small,
+// fast model reserved for the NLI consistency check (a much simpler task).
+const (
+	ModelStrong = "openai/gpt-oss-120b"
+	ModelCheap  = "openai/gpt-oss-20b"
+)
+
 // groqCleanTransport handles JSON formatting, message cleaning, and automatic 429 backoff retries.
 type groqCleanTransport struct {
 	base       http.RoundTripper

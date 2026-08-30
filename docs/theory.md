@@ -129,7 +129,7 @@ about the agent. The mapping:
 | Internal certainty τ(c) | **Confidence score** (`DiagnosticResult.ConfidenceScore`) — the agent's mean per-option confidence over the baseline (or a self-reported `ConfidenceProbe` score in `CCI`) |
 | Reasoning consistency γ(c) | **Consistency score** (`DiagnosticResult.ConsistencyScore`) — an NLI/entailment probe comparing R1 (the claim) with R2 (an adversarial counter-argument) |
 | True/false rationale pairs R⁺/R⁻ | **Inversion probe** (`GrillProbe`): "Assume your initial claim is strictly FALSE… provide the strongest defense of the alternative." R1 = claim, R2 = counter-argument |
-| NLI contradiction model | **`ConsistencyScorer`**: `LLMScorer` (model-based entailment, default) or `LexicalScorer` (deterministic Jaccard overlap) |
+| NLI contradiction model | **`ConsistencyScorer`**: `LLMScorer` (model-based entailment, default; runs on `Config.ConsistencyModel`, defaulting to `SupervisorModel`) or `LexicalScorer` (deterministic Jaccard overlap) |
 | Thresholds α, β | **`Thresholds{Confidence, Consistency}`** |
 | Four-quadrant routing policy | **`QuadrantState`** via `classifyWith` |
 
@@ -192,7 +192,11 @@ extends PCC in three ways:
    paper's "why retrieve" analysis.
 3. **Cheap, deterministic consistency.** `LexicalScorer` approximates the NLI
    model with Jaccard overlap for zero extra model calls, trading fidelity for
-   cost — useful when the paper's full NLI machinery is overkill.
+   cost — useful when the paper's full NLI machinery is overkill. Because it is
+   a weak proxy, use it while iterating on pipeline/quadrant logic and switch
+   to `LLMScorer` (on a cheap `ConsistencyModel`) for final benchmark numbers.
+   Saved summaries can be re-scored later with `ReclassifySummary` (pure) or
+   `Rescore` (model-backed) without re-running the debate.
 
 The shared intellectual core: **confidence alone is not enough to trust an
 agent; you must also test whether its reasoning holds up under adversarial
@@ -206,6 +210,6 @@ the paper targets (HALLUCINATING).
 2. [usage-guide.md](./usage-guide.md) — how to configure thresholds, scorers,
    grill strategies, and read the quadrants.
 3. [file-structure.md](./file-structure.md) — where each piece lives
-   (`cci.go`, `drift.go`, `grill.go`, `prompts.go`).
+   (`internal/core`, `internal/drift`, `internal/scoring`, `internal/engine`).
 4. This document — the theory behind why the quadrant grid is the right
    diagnostic.

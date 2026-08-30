@@ -81,8 +81,13 @@ Groq's API (including a 429-backoff transport and a "panel of historians" demo,
 one of which is deliberately instructed to hallucinate):
 
 ```sh
-GROQ_API_KEY=... go run ./examples/basic
+GROQ_API_KEY=... go run ./examples/basic          # debug: LexicalScorer, no NLI calls
+GROQ_API_KEY=... go run ./examples/basic -final   # benchmark: cheap LLM NLI scorer
 ```
+
+The example splits models (strong moderator, cheap consistency model), caps
+each debate with a `CostBudget`, and demonstrates the
+save → load → reclassify/rescore caching workflow.
 
 ## 3. Building the config
 
@@ -103,8 +108,14 @@ engine, err := gaslit.New(ctx, cfg,
 
 | Field | Notes |
 |---|---|
-| `cfg.SupervisorModel` | The moderator model (also powers the default LLM consistency scorer). **Required.** |
+| `cfg.SupervisorModel` | The moderator model. **Required.** |
 | `cfg.Agents` | The panel; ≥ 1 agent. Names (`Agent.Name(ctx)`) must be unique. |
+
+Optionally, decouple the NLI/consistency check from the moderator:
+
+| Field | Notes |
+|---|---|
+| `cfg.ConsistencyModel` | Powers the default `*LLMScorer`. Defaults to `SupervisorModel`. Use a **cheap** model here and a strong one for `SupervisorModel`. |
 
 ### Thresholds
 
@@ -124,7 +135,7 @@ Presets set these for you: `PresetStrict` uses (0.10, 0.60, 0.65);
 | Drift metric | **`TVDRift`**, `KLDistance`, `JSDistance`, `MaxChange`, or custom `DriftMetric` |
 | Attribution | **`ChampionAttribution`**, `ShiftWeightedAttribution`, `CorrelationAttribution`, or custom `AttributionFn` |
 | Classifier | **`ThresholdClassifier`**, or custom `Classifier` |
-| Consistency scorer | **`*LLMScorer`** (uses supervisor model), `*LexicalScorer` (deterministic, zero extra calls), or custom `ConsistencyScorer` |
+| Consistency scorer | **`*LLMScorer`** (uses `ConsistencyModel`), `*LexicalScorer` (deterministic, zero extra calls), or custom `ConsistencyScorer` |
 | Aggregation | **`MajorityVote`**, `ConfidenceWeightedVote`, `WeightedVote`, `ConfidenceWeightedWeightedVote`, or custom `AggregationFn` |
 | Protocol | **`ProtocolSupervised`**, `ProtocolAdversarialPairs`, `ProtocolRoundRobin`, `ProtocolDevilsAdvocate` |
 | Grill strategy | **`GrillSingleSuspect`**, `GrillNone`, `GrillInfluencer`, `GrillAllDrifted`, `GrillTopN` (with `GrillCount`) |
@@ -142,6 +153,27 @@ cfg.Protocol = gaslit.ProtocolSupervised
 cfg.ConsistencyScorer = &gaslit.LexicalScorer{} // skip extra model calls
 ```
 
+### Debug vs. final-benchmark consistency scoring
+
+`LexicalScorer` is a **weak proxy** for real semantic consistency — fine while
+you're iterating on harness logic (question loading, scoring, quadrant tallying)
+but not for final numbers. Split your models and toggle the scorer:
+
+```go
+// Debugging the pipeline: deterministic, zero extra model calls.
+engine, _ := gaslit.New(ctx, cfg, gaslit.WithLexicalScorer())
+
+// Final benchmark: cheap model does the NLI check, strong model debates.
+cfg.ConsistencyModel = cheapModel          // or gaslit.WithConsistencyModel(cheapModel)
+engine, _ = gaslit.New(ctx, cfg)           // default *LLMScorer now uses cheapModel
+```
+
+Or override the scorer per call without rebuilding the engine:
+
+```go
+engine.Debate(ctx, q, opts, gaslit.WithConsistencyScorerCall(&gaslit.LexicalScorer{}))
+```
+
 ### Per-agent configuration
 
 `WithAgentConfig(name, AgentConfig{...})` customizes a single panelist:
@@ -155,6 +187,10 @@ gaslit.WithAgentConfig("economic_historian", gaslit.AgentConfig{
 ```
 
 `SkipPhases` lets an agent sit out specific phases entirely.
+
+> **Always set a `Budget` for unattended runs.** `MaxCalls`/`MaxTokens` cap the
+> debate up front, so a bug (like an infinite retry loop) surfaces as a
+> `*gaslit.BudgetError` instead of burning your quota.
 
 ### Execution, budget, observability
 
@@ -318,7 +354,35 @@ var loaded gaslit.FullDebateSummary
 _ = json.NewDecoder(...) // or
 ```
 
-`LoadSummary` is the round-trip reader for `SaveSummary` output.
+`LoadSummary` is the round-trip reader for `SaveSummary` output. File variants
+`SaveSummaryFile(path, s)` / `LoadSummaryFile(path)` write/read directly.
+
+### Cache the debate, iterate on the rubric
+
+If you're going to re-run diagnostics/scoring against the same question set,
+don't re-call Baseline/Debate each time. Run it once, save it, then re-run only
+your scoring/quadrant code against the saved JSON — your biggest saving, since
+the rubric changes far more often than your question set.
+
+```go
+// Run once, cache.
+gaslit.SaveSummaryFile("run.json", summary)
+
+// Later: load, then re-tally quadrants with zero model calls.
+loaded, _ := gaslit.LoadSummaryFile("run.json")
+gaslit.ReclassifySummary(loaded, gaslit.Thresholds{Consistency: 0.65})
+
+// Or: re-run only the consistency scorer over the stored R1/R2 (no new debate).
+// Deterministic pass:
+engine.Rescore(ctx, loaded, gaslit.WithConsistencyScorerCall(&gaslit.LexicalScorer{}))
+// Final pass with the cheap NLI model:
+engine.Rescore(ctx, loaded) // uses the engine's configured scorer
+```
+
+`ReclassifySummary` is pure (no model calls) — perfect for tuning thresholds or
+quadrant tallying. `Rescore` re-scores each diagnostic's stored arguments
+(`r1`/`r2`) and reclassifies, so you only pay for the cheap NLI check, never a
+fresh debate.
 
 ## 9. Common patterns
 

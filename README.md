@@ -107,9 +107,11 @@ can be refined with an `Option`:
 - **Attribution** — `ChampionAttribution`, `ShiftWeightedAttribution`,
   `CorrelationAttribution`, or a custom `AttributionFn`.
 - **Quadrant classifier** — `ThresholdClassifier` or a custom `Classifier`.
-- **Consistency scoring** — `*LLMScorer` (default, uses the supervisor model) or
-  the deterministic `*LexicalScorer` (zero extra model calls), or a custom
-  `ConsistencyScorer`.
+- **Consistency scoring** — `*LLMScorer` (default, uses `Config.ConsistencyModel`,
+  which falls back to `SupervisorModel`) or the deterministic `*LexicalScorer`
+  (zero extra model calls), or a custom `ConsistencyScorer`. Convenience options:
+  `WithLexicalScorer()` (debugging) and `WithLLMScorer(m)` / `WithConsistencyModel(m)`
+  (cheap scoring model, strong moderator model).
 - **Grill strategy** — `GrillNone`, `GrillSingleSuspect`, `GrillInfluencer`,
   `GrillAllDrifted`, `GrillTopN` (with `GrillCount`).
 - **Protocols** — `ProtocolSupervised`, `ProtocolAdversarialPairs`,
@@ -144,6 +146,12 @@ The pipeline is fully sliced; every stage is callable standalone:
 - `CCI(ctx, agent, statement, question, opts...)` — **standalone** consistency /
   confidence probe against any `adk.Agent`, even one outside the panel.
 - `Stream(ctx, question, options, opts...)` — stream pipeline events as they happen.
+- `SaveSummary` / `SaveSummaryFile` / `LoadSummary` / `LoadSummaryFile` — cache a
+  debate to disk.
+- `ReclassifySummary(s, thresholds)` — pure quadrant re-tally of a saved summary
+  (zero model calls).
+- `Rescore(ctx, s, opts...)` — re-run only the consistency scorer over a saved
+  summary's stored arguments, then reclassify. No new baseline/debate calls.
 
 All variants accept per-call `CallOption`s (`WithVerboseCall`, `WithMaxRoundsCall`,
 `WithThresholdsCall`, `WithMetadataCall`, `WithBudgetCall`, ...) that merge over
@@ -151,10 +159,11 @@ the engine config.
 
 ## Example
 
-See [`examples/basic`](./examples/basic) for a full runnable program using Groq's API, including a 429-backoff transport and a "panel of historians" demo.
+See [`examples/basic`](./examples/basic) for a full runnable program using Groq's API, including a 429-backoff transport and a "panel of historians" demo. It splits models (strong moderator, cheap `ConsistencyModel`), caps each debate with a `CostBudget`, and demonstrates the save → load → reclassify/rescore caching loop.
 
 ```sh
-GROQ_API_KEY=... go run ./examples/basic
+GROQ_API_KEY=... go run ./examples/basic          # debug: LexicalScorer, no NLI calls
+GROQ_API_KEY=... go run ./examples/basic -final   # benchmark: cheap LLM NLI scorer
 ```
 
 ## License
